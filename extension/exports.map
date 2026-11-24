@@ -1,0 +1,10 @@
+/* Copyright 2026 ETF2L Contributors, Dave
+ *
+ * The only symbol git.ext.so exports: SourceMod's entry point. Everything
+ * else, including libgit2, Mbed TLS and libstdc++, stays local to the extension. */
+{
+	global:
+		GetSMExtAPI;
+	local:
+		*;
+};

@@ -1,0 +1,27 @@
+# vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
+# Copyright 2026 ETF2L Contributors, Dave
+#
+# The unit tests of the core, one program per architecture, without
+# SourceMod.
+import os
+
+project = builder.ProgramProject('git-tests')
+project.sources += Extension.core_sources()
+project.sources += [os.path.join(builder.sourcePath, 'tests', 'tests.cpp')]
+
+for cxx in builder.targets:
+  binary = project.Configure(cxx, 'git-tests-' + cxx.target.arch, 'Tests - {}'.format(cxx.target.arch))
+  Extension.link_git(binary)
+
+builder.Add(project)
+
+# git-contend, a second fetcher on a shared root.
+tool = builder.ProgramProject('git-contend')
+tool.sources += Extension.core_sources()
+tool.sources += [os.path.join(builder.sourcePath, 'tools', 'contend.cpp')]
+
+for cxx in builder.targets:
+  binary = tool.Configure(cxx, 'git-contend-' + cxx.target.arch, 'Contend - {}'.format(cxx.target.arch))
+  Extension.link_git(binary)
+
+builder.Add(tool)

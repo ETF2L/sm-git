@@ -1,0 +1,83 @@
+# vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
+# Copyright 2026 ETF2L Contributors, Dave
+#
+# Builds git.ext.so for every target architecture, and the unit tests as a
+# program per architecture. The extension uses no engine or Metamod API, so
+# it is one binary for every game. libgit2 and Mbed TLS come prebuilt per
+# architecture from --deps-path. Compiler settings follow SourceMod's own
+# AMBuildScript for Linux extensions.
+import os
+
+def Normalize(path):
+  return os.path.abspath(os.path.normpath(path))
+
+class ExtensionConfig(object):
+  def __init__(self):
+    sm_path = builder.options.sm_path
+    if not sm_path or not os.path.isdir(sm_path):
+      raise Exception('--sm-path must name the SourceMod folder')
+    deps_path = builder.options.deps_path
+    if not deps_path or not os.path.isdir(deps_path):
+      raise Exception('--deps-path must name the folder of the static libraries')
+    self.sm_root = Normalize(sm_path)
+    self.deps_root = Normalize(deps_path)
+    self.all_targets = []
+    for arch in builder.options.targets.split(','):
+      cxx = builder.DetectCxx(target_arch = arch)
+      self.configure_cxx(cxx)
+      self.all_targets.append(cxx)
+
+  def configure_cxx(self, cxx):
+    if builder.options.opt == '1':
+      cxx.defines += ['NDEBUG']
+      cxx.cflags += ['-O3']
+    if builder.options.debug == '1':
+      cxx.defines += ['DEBUG', '_DEBUG']
+      cxx.cflags += ['-g3']
+    cxx.defines += ['HAVE_STDINT_H', 'GNUC', 'LINUX', '_LINUX', 'POSIX', '_FILE_OFFSET_BITS=64']
+    cxx.cflags += ['-pipe', '-fno-strict-aliasing', '-Wall', '-Werror', '-fvisibility=hidden', '-msse',
+                   '-fno-omit-frame-pointer', '-fPIC']
+    cxx.cxxflags += ['-std=c++17', '-Wno-non-virtual-dtor', '-Wno-overloaded-virtual',
+                     '-fvisibility-inlines-hidden', '-Wno-unused-parameter',
+                     '-Wno-implicit-exception-spec-mismatch']
+    cxx.linkflags += ['-lm', '-static-libstdc++', '-lpthread', '-lrt']
+    cxx.includes += [
+      os.path.join(builder.sourcePath, 'src'),
+      os.path.join(self.deps_root, cxx.target.arch, 'include'),
+    ]
+
+  # Everything that does not know SourceMod, shared by the extension and its
+  # tests.
+  def core_sources(self):
+    return [os.path.join(builder.sourcePath, 'src', name)
+            for name in ['config.cpp', 'remote.cpp', 'repo.cpp', 'root.cpp', 'serverlog.cpp', 'watches.cpp',
+                         'worker.cpp']]
+
+  # libgit2 before the Mbed TLS libraries it needs.
+  def link_git(self, binary):
+    lib = os.path.join(self.deps_root, binary.compiler.target.arch, 'lib')
+    binary.compiler.postlink += [os.path.join(lib, name)
+                                 for name in ['libgit2.a', 'libmbedtls.a', 'libmbedx509.a', 'libmbedcrypto.a']]
+
+  def configure_extension(self, binary):
+    compiler = binary.compiler
+    compiler.cxxincludes += [
+      os.path.join(self.sm_root, 'public'),
+      os.path.join(self.sm_root, 'public', 'extensions'),
+      os.path.join(self.sm_root, 'sourcepawn', 'include'),
+      os.path.join(self.sm_root, 'public', 'amtl', 'amtl'),
+      os.path.join(self.sm_root, 'public', 'amtl'),
+    ]
+    binary.sources += [os.path.join(self.sm_root, 'public', 'smsdk_ext.cpp')]
+    self.link_git(binary)
+    # Only SourceMod's entry point leaves the library.
+    compiler.linkflags += [
+      '-Wl,--exclude-libs,ALL',
+      '-Wl,--version-script=' + os.path.join(builder.sourcePath, 'exports.map'),
+      '-Wl,--no-undefined',
+    ]
+
+Extension = ExtensionConfig()
+
+builder.targets = builder.CloneableList(Extension.all_targets)
+builder.Build(['AMBuilder', 'tests/AMBuilder'], {'Extension': Extension})

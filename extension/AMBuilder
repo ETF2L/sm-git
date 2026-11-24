@@ -1,0 +1,15 @@
+# vim: set sts=2 ts=8 sw=2 tw=99 et ft=python:
+# Copyright 2026 ETF2L Contributors, Dave
+#
+# The extension itself: the core plus the SourceMod layer.
+import os
+
+project = builder.LibraryProject('git.ext')
+project.sources += Extension.core_sources()
+project.sources += [os.path.join(builder.sourcePath, 'src', name) for name in ['extension.cpp', 'natives.cpp']]
+
+for cxx in builder.targets:
+  binary = project.Configure(cxx, project.name, 'Release - {}'.format(cxx.target.arch))
+  Extension.configure_extension(binary)
+
+builder.Add(project)

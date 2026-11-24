@@ -1,0 +1,24 @@
+# Never tracked: Claude's working files, ADRs, deploy scripts and reports
+.claude/
+**/docs/adr/
+HANDOVER.md
+PLAN.md
+depl.sh
+depl.pl
+build.sh
+CONTEXT.md
+extension/compile_flags.txt
+extension/fetch-lsp-deps.sh
+.cache/
+code-review-*.html
+architecture-*.html
+.spcomp-lsp.json
+
+# Test servers and their end-to-end tests
+/server/
+
+# Test server state, created at run time
+server/run/
+extension/.lsp-deps/
+__pycache__/
+dist/

@@ -1,0 +1,201 @@
+# Copyright 2026 ETF2L Contributors, Dave
+#
+# Builds sm-git for Linux (x86 and x86_64) on every push, pull request and
+# manual run: Mbed TLS and libgit2 from the sources deps/deps.json pins
+# (cached), with the CMake it pins, through deps/build-deps.sh; the
+# extension and its unit tests against a pinned SourceMod commit, the tests
+# on both architectures, the check of the binaries' exports and glibc
+# version, and the git-admin plugin with the spcomp of a pinned SourceMod
+# build. It packs an archive laid out like a game folder, with the settings
+# as configs/git.cfg.example so that unpacking it never overwrites a
+# server's own git.cfg. For a pushed v* tag it also publishes it as a GitHub
+# release, after checking that the tag matches SMEXT_CONF_VERSION in
+# extension/src/smsdk_config.h. A separate job checks the SourcePawn files
+# in scripting/ with pawncritic (sourcepawn-tools' SourcePawn Lint action).
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # The SourceMod commit (on 1.12-dev) the extension builds against, pinned
+  # like the libraries, so that a release is reproducible from its tag.
+  SOURCEMOD_COMMIT: 3808e21eb842d8598cc8351a341dcbe661d21b58
+  # The SourceMod build whose spcomp compiles the plugin.
+  SOURCEMOD_DROP: https://sm.alliedmods.net/smdrop/1.12/sourcemod-1.12.0-git7260-linux.tar.gz
+  # The extension's binaries may require at most this glibc version.
+  MAX_GLIBC: '2.35'
+
+jobs:
+  lint:
+    name: Lint (SourcePawn)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run pawncritic
+        uses: davenonymous/sourcepawn-tools@v0
+        with:
+          paths: scripting
+
+  build:
+    name: Build (linux)
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -yq --no-install-recommends clang gcc-multilib g++-multilib curl bzip2 make
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: git
+
+      - name: Checkout SourceMod
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/sourcemod
+          ref: ${{ env.SOURCEMOD_COMMIT }}
+          path: sourcemod
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache the libraries
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ hashFiles('git/deps/**') }}
+
+      - name: Fetch the pinned sources
+        run: python -I git/deps/fetch.py deps/src
+
+      - name: Build the libraries
+        if: steps.cache-deps.outputs.cache-hit != 'true'
+        run: |
+          export PATH="$PWD/deps/src/cmake/bin:$PATH"
+          for arch in x86 x86_64; do
+            git/deps/build-deps.sh "$arch" deps/src "deps/$arch"
+          done
+
+      - name: Install AMBuild
+        run: pip install git+https://github.com/alliedmodders/ambuild
+
+      - name: Build
+        run: |
+          export CC=clang CXX=clang++
+          mkdir -p build
+          cd build
+          python ../git/extension/configure.py --enable-optimize --targets=x86,x86_64 --sm-path=../sourcemod \
+            --deps-path=../deps
+          ambuild
+
+      - name: Run the unit tests
+        run: |
+          for arch in x86 x86_64; do
+            echo "Unit tests for $arch:"
+            "build/tests/git-tests-$arch/linux-$arch/git-tests-$arch" deps/src/ca-bundle.crt
+          done
+
+      - name: Check the binaries' exports and glibc version
+        run: |
+          for binary in build/git.ext/linux-*/git.ext.so; do
+            exported=$(nm -D --defined-only "$binary" | awk '{print $3}' | grep -v '^$' | sort | tr '\n' ' ')
+            if [ "$exported" != "GetSMExtAPI " ]; then
+              echo "::error::$binary exports $exported"
+              exit 1
+            fi
+            needed=$(objdump -T "$binary" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)
+            echo "$binary needs glibc $needed"
+            if [ "$(printf '%s\n%s\n' "$needed" "$MAX_GLIBC" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then
+              echo "::error::$binary needs glibc $needed, more than $MAX_GLIBC"
+              exit 1
+            fi
+          done
+
+      - name: Compile the plugin
+        run: |
+          curl -fsSL -o sourcemod.tar.gz "$SOURCEMOD_DROP"
+          mkdir sm && tar -xzf sourcemod.tar.gz -C sm
+          scripting=sm/addons/sourcemod/scripting
+          "$scripting/spcomp" -i "$scripting/include" -i git/scripting/include -E \
+            git/scripting/git-admin.sp -o git-admin.smx
+
+      - name: Pack
+        run: |
+          label="${GITHUB_REF_NAME}"
+          [[ "$GITHUB_REF" == refs/tags/* ]] || label="${GITHUB_SHA::7}"
+          sm=stage/addons/sourcemod
+          mkdir -p "$sm/extensions/x64" "$sm/plugins" "$sm/configs/git" "$sm/scripting/include" "$sm/licenses/git"
+          strip --strip-debug -o "$sm/extensions/git.ext.so" build/git.ext/linux-x86/git.ext.so
+          strip --strip-debug -o "$sm/extensions/x64/git.ext.so" build/git.ext/linux-x86_64/git.ext.so
+          cp git-admin.smx "$sm/plugins/"
+          cp git/configs/git.cfg "$sm/configs/git.cfg.example"
+          cp deps/src/ca-bundle.crt "$sm/configs/git/ca-bundle.crt"
+          cp git/scripting/git-admin.sp "$sm/scripting/"
+          cp git/scripting/include/git.inc "$sm/scripting/include/"
+          cp git/LICENSE.txt git/licenses/GPLv2.txt git/licenses/GPLv3.txt "$sm/licenses/git/"
+          cp deps/src/libgit2/COPYING "$sm/licenses/git/libgit2.txt"
+          cp deps/src/mbedtls/LICENSE "$sm/licenses/git/mbedtls.txt"
+          tar -czf "sm-git-$label-linux.tar.gz" -C stage addons
+          echo "Contents:"
+          find stage -type f | sort
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: sm-git-linux
+          path: sm-git-*-linux.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check that the tag matches the extension version
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version=$(sed -n 's/^#define SMEXT_CONF_VERSION *"\(.*\)"$/\1/p' extension/src/smsdk_config.h)
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::Tag $tag does not match version $version in extension/src/smsdk_config.h"
+            exit 1
+          fi
+          echo "Version $version matches tag $tag"
+
+      - name: Download the archive
+        uses: actions/download-artifact@v4
+        with:
+          path: archives
+          name: sm-git-linux
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" archives/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
