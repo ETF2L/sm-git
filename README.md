@@ -140,7 +140,33 @@ glibc 2.35, compiles `git-admin.sp` with the spcomp of a pinned SourceMod build 
 
 The settings come as `git.cfg.example`, so unpacking the archive never overwrites a server's own `git.cfg`. For a
 pushed `v*` tag it publishes the archive as a GitHub release of `etf2l/sm-git`, after checking the tag against
-`SMEXT_CONF_VERSION` in `extension/src/smsdk_config.h`. A separate job checks `scripting/` with pawncritic.
+`SMEXT_CONF_VERSION` in `extension/src/smsdk_config.h`. Before the archive is uploaded, sm-runner's setup and test
+actions (`davenonymous/sm-runner/setup@v0` and `test@v0`) run the SourcePawn tests against the packed extension and
+plugin with both `smrunner` and `smrunner64`; a failing test fails the job, so no release is published. A separate job
+checks `scripting/` and `tests/` with pawncritic and `pawntidy --check`.
+
+### Tests
+
+The SourcePawn tests run under [sm-runner](https://github.com/davenonymous/sm-runner)'s smrunner, a simulated server:
+
+- `tests/test_git.sp`: every native as a plugin calls it: opening and cloning, refused URLs, revisions, refs, the log,
+  diffs, trees, reading, writing out and comparing files, the write-out rules, watches and removal, the repository
+  list and the documented native errors.
+- `tests/test_git_admin.sp`: the `sm_git` command of `git-admin.sp` and its root flag.
+
+They need the network: every test clones `https://github.com/ETF2L/sm-git` into its own root, and reads the tags
+`v1.0.0` (the first commit) and `smrunner-fixture` (the commit that added the tests, whose parent is `v1.0.0`). Keep
+both tags where they are. Compile the tests with `scripting/include` and smrunner's `share/include` on the include path,
+then run them against the packed archive's `addons/sourcemod`:
+
+```
+smrunner test test_git.smx --extensions <dist>/extensions \
+    --file <dist>/configs/git/ca-bundle.crt=addons/sourcemod/configs/git/ca-bundle.crt
+smrunner test test_git_admin.smx --extensions <dist>/extensions --plugin git-admin.smx \
+    --file <dist>/configs/git/ca-bundle.crt=addons/sourcemod/configs/git/ca-bundle.crt
+```
+
+`smrunner` loads the x86 extension, `smrunner64` the x64 one.
 
 ## Layout
 
@@ -155,6 +181,7 @@ pushed `v*` tag it publishes the archive as a GitHub release of `etf2l/sm-git`, 
 | `extension/src/serverlog.*` | What the workers have to log. |
 | `extension/src/extension.*`, `extension/src/natives.cpp` | The SourceMod layer. Everything above knows no SourceMod. |
 | `extension/tests/` | Unit tests. |
+| `tests/` | The SourcePawn tests for smrunner. |
 | `extension/tools/contend.cpp` | Clones or fetches one repository into a root, to run several at once on one root. |
 | `scripting/` | `include/git.inc` and `git-admin.sp`. |
 | `configs/git.cfg` | The settings with their defaults. |
